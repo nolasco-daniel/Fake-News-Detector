@@ -1,0 +1,261 @@
+async function postJson(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(()=>'');
+    throw new Error(msg || ('HTTP '+res.status));
+  }
+  return res.json();
+}
+
+const resultEl = document.getElementById('result');
+function badge(colorClass, text) {
+  return `<span class="badge ${colorClass}"><span class="dot"></span>${text}</span>`;
+}
+function show(obj) {
+  if (!obj || typeof obj !== 'object') {
+    resultEl.textContent = String(obj);
+    return;
+  }
+  const isFake = obj.predictedCategory === 'fake';
+  const conf = undefined;
+  const sentiment = obj.sentiment || {};
+  const header = `Prediction: ${obj.predictedCategory || 'n/a'} ${conf ? `• Confidence: ${conf}` : ''}`;
+
+  let html = '';
+  html += `<div class="result-content">`;
+  
+  // Column 1: Probabilities to Source Information
+  html += `<div class="result-column">`;
+  html += `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">`;
+  html += badge(isFake ? 'danger' : 'success', obj.predictedCategory || 'unknown');
+  if (conf) html += badge('info', `confidence ${conf}`);
+  html += `</div>`;
+
+  if (obj.probabilities && (obj.probabilities.fake != null)) {
+    const p = obj.probabilities;
+    const fmt = (x) => (Math.round(x * 1000) / 10).toFixed(1) + '%';
+    html += `<div class="section-title">Probabilities</div>`;
+    html += `<div class="badges">
+      ${badge('danger', `fake ${fmt(p.fake)}`)}
+      ${badge('success', `real ${fmt(p.real)}`)}
+      ${badge('info', `from model ${fmt(p.fromClassifier || 0)}`)}
+      ${badge('warn', `from rules ${fmt(p.fromRules || 0)}`)}
+    </div>`;
+    html += `<div style="margin:6px 0 0; font-size:12px; color: #ffffff;">fake = 0.75 × model + 0.25 × rules</div>`;
+  }
+
+  if (obj.url) {
+    html += `<div class="section-title">URL</div>`;
+    html += `<div style="margin-bottom:8px;">${obj.url}</div>`;
+  }
+
+  if (obj.image || obj.imageName) {
+    html += `<div class="section-title">Image</div>`;
+    const imgSrc = obj.image || obj.imageName;
+    html += `<div style="margin-bottom:8px;">`;
+    html += `<img src="${imgSrc}" alt="Article Image" style="max-width:300px;max-height:200px;border-radius:6px;border:1px solid var(--border);background:#222;" />`;
+    html += `</div>`;
+  }
+
+  if (obj.title) {
+    html += `<div class="section-title">Article Title</div>`;
+    html += `<div style="margin-bottom:8px;font-weight:500;">${obj.title}</div>`;
+  }
+
+  if (obj.datePublished) {
+    html += `<div class="section-title">Date of Publication</div>`;
+    const date = new Date(obj.datePublished);
+    const formattedDate = date.toLocaleString('en-US', { 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    html += `<div style="margin-bottom:8px;">${formattedDate}</div>`;
+  }
+
+  if (obj.author || obj.publisher) {
+    html += `<div class="section-title">Source Information</div>`;
+    html += `<div style="margin-bottom:8px;">`;
+    if (obj.author) {
+      html += `<div><strong>Author:</strong> ${obj.author}</div>`;
+    }
+    if (obj.publisher) {
+      html += `<div><strong>Publisher:</strong> ${obj.publisher}</div>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div>`;
+
+  // Column 2: Description to Rules Signals
+  html += `<div class="result-column">`;
+  if (obj.description) {
+    html += `<div class="section-title">Description</div>`;
+    html += `<div style="margin-bottom:8px;opacity:.9;">${obj.description}</div>`;
+  }
+
+  if (obj.extractedText) {
+    html += `<div class="section-title">Extracted Text</div>`;
+    html += `<div style="margin-bottom:8px;opacity:.9;max-height:200px;overflow-y:auto;background:#0b1021;padding:8px;border-radius:6px;border:1px solid var(--border);">${obj.extractedText}</div>`;
+  }
+
+  if (obj.textPreview) {
+    html += `<div class="section-title">Preview</div>`;
+    html += `<div style="opacity:.9">${obj.textPreview}</div>`;
+  }
+
+  if (sentiment && (sentiment.compound != null)) {
+    html += `<div class="section-title">Sentiment</div>`;
+    html += `<div class="badges">
+      ${badge('info', `compound ${sentiment.compound}`)}
+      ${badge('info', `pos ${sentiment.pos}`)}
+      ${badge('info', `neu ${sentiment.neu}`)}
+      ${badge('info', `neg ${sentiment.neg}`)}
+    </div>`;
+  }
+
+  if (obj.rules && obj.rules.signals) {
+    const entries = Object.entries(obj.rules.signals)
+      .map(([k, v]) => ({ k, v }))
+      .filter(x => typeof x.v === 'number' && x.v > 0.01)
+      .sort((a, b) => b.v - a.v)
+      .slice(0, 5);
+    if (entries.length) {
+      html += `<div class="section-title">Rules Signals</div>`;
+      html += `<div class="badges">`;
+      for (const { k, v } of entries) {
+        const label = `${k.replace(/([A-Z])/g, ' $1').toLowerCase().trim()} ${Math.round(v * 100)}%`;
+        html += badge('warn', label);
+      }
+      html += `</div>`;
+    }
+  }
+  html += `</div>`;
+
+  html += `</div>`;
+  resultEl.innerHTML = html;
+}
+
+document.getElementById('textForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = document.getElementById('textInput').value.trim();
+  if (!text) { alert('Enter some text'); return; }
+  show({ loading: true });
+  try {
+    const data = await postJson('/api/analyze', { text });
+    show(data);
+  } catch (err) {
+    show({ error: err.message || String(err) });
+  }
+});
+
+document.getElementById('urlForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = document.getElementById('urlInput').value.trim();
+  if (!url) { alert('Enter a URL'); return; }
+  show({ loading: true });
+  try {
+    const data = await postJson('/api/analyze-url', { url });
+    show(data);
+  } catch (err) {
+    show({ error: err.message || String(err) });
+  }
+});
+
+const imageInput = document.getElementById('imageInput');
+const fileUploadArea = document.getElementById('fileUploadArea');
+const imagePreview = document.getElementById('imagePreview');
+const previewImg = document.getElementById('previewImg');
+const removeImageBtn = document.getElementById('removeImage');
+
+fileUploadArea.addEventListener('click', () => {
+  imageInput.click();
+});
+
+fileUploadArea.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  fileUploadArea.classList.add('dragover');
+});
+
+fileUploadArea.addEventListener('dragleave', () => {
+  fileUploadArea.classList.remove('dragover');
+});
+
+fileUploadArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  fileUploadArea.classList.remove('dragover');
+  const files = e.dataTransfer.files;
+  if (files.length > 0 && files[0].type.startsWith('image/')) {
+    handleImageFile(files[0]);
+  }
+});
+
+imageInput.addEventListener('change', (e) => {
+  if (e.target.files.length > 0) {
+    handleImageFile(e.target.files[0]);
+  }
+});
+
+removeImageBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  clearImage();
+});
+
+function handleImageFile(file) {
+  if (!file.type.startsWith('image/')) {
+    alert('Please select an image file');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    previewImg.src = e.target.result;
+    fileUploadArea.style.display = 'none';
+    imagePreview.style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearImage() {
+  imageInput.value = '';
+  fileUploadArea.style.display = 'block';
+  imagePreview.style.display = 'none';
+  previewImg.src = '';
+}
+
+document.getElementById('imageForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const file = imageInput.files[0];
+  
+  if (!file) {
+    alert('Please select an image file');
+    return;
+  }
+
+  show({ loading: true });
+  
+  try {
+    const formData = new FormData();
+    formData.append('image', file);
+
+    const response = await fetch('/api/analyze-image', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(errorText || `HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    show(data);
+  } catch (err) {
+    show({ error: err.message || String(err) });
+  }
+});
